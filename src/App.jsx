@@ -41,10 +41,10 @@ function App() {
 
   const fetchData = async () => {
     try {
-      const leavesRes = await axios.get('http://localhost:3000/api/leaves');
-      setLeaves(leavesRes.data);
-      const empRes = await axios.get('http://localhost:3000/api/employees');
-      setEmployees(empRes.data);
+      const leavesRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/leaves`);
+      setLeaves(Array.isArray(leavesRes.data) ? leavesRes.data : []);
+      const empRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/employees`);
+      setEmployees(Array.isArray(empRes.data) ? empRes.data : []);
     } catch (err) {
       console.error('Error fetching data', err);
     }
@@ -52,8 +52,8 @@ function App() {
 
   const fetchLiveData = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/attendance/live');
-      setLiveData(res.data);
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/live`);
+      setLiveData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch live data', err);
     }
@@ -61,7 +61,7 @@ function App() {
 
   const fetchDetailedData = async (empId, dateStr) => {
     try {
-      const res = await axios.get(`http://localhost:3000/api/attendance/employee/${empId}?date=${dateStr}`);
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/employee/${empId}?date=${dateStr}`);
       setDetailedData(res.data);
     } catch (err) {
       console.error('Failed to fetch detailed data', err);
@@ -70,8 +70,8 @@ function App() {
 
   const fetchDailyAttendance = async (dateStr) => {
     try {
-      const res = await axios.get(`http://localhost:3000/api/attendance/daily?date=${dateStr}`);
-      setDailyAttendanceData(res.data);
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/daily?date=${dateStr}`);
+      setDailyAttendanceData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch daily attendance', err);
     }
@@ -95,7 +95,7 @@ function App() {
     fetchLiveData();
 
     // Connect WebSocket for real-time updates
-    const socket = io('http://localhost:3000');
+    const socket = io(import.meta.env.VITE_API_URL);
     
     socket.on('data-update', () => {
       fetchData();
@@ -127,7 +127,7 @@ function App() {
     e.preventDefault();
     setAuthError('');
     try {
-      await axios.post('http://localhost:3000/api/admin/login', authForm);
+      await axios.post(`${import.meta.env.VITE_API_URL}/api/admin/login`, authForm);
       setIsAuthenticated(true);
       setLoggedInEmail(authForm.email);
       localStorage.setItem('adminAuth', 'true');
@@ -137,10 +137,11 @@ function App() {
     }
   };
 
+
   const handleApprove = async (id, status) => {
     setProcessingLeaves(prev => ({ ...prev, [id]: true }));
     try {
-      await axios.put(`http://localhost:3000/api/leaves/${id}`, { status });
+      await axios.put(`${import.meta.env.VITE_API_URL}/api/leaves/${id}`, { status });
       fetchData();
     } catch (err) {
       console.error('Error updating status', err);
@@ -167,7 +168,7 @@ function App() {
     e.preventDefault();
     setIsAddingEmployee(true);
     try {
-      await axios.post('http://localhost:3000/api/employees', newEmployee);
+      await axios.post(`${import.meta.env.VITE_API_URL}/api/employees`, newEmployee);
       setNewEmployee({ name: '', email: '' });
       fetchData();
     } catch (err) {
@@ -180,7 +181,7 @@ function App() {
   const handleDeleteEmployee = async (id) => {
     if (!window.confirm("Are you sure you want to delete this employee? This will also delete their leaves.")) return;
     try {
-      await axios.delete(`http://localhost:3000/api/employees/${id}`);
+      await axios.delete(`${import.meta.env.VITE_API_URL}/api/employees/${id}`);
       fetchData();
     } catch (err) {
       console.error('Error deleting employee', err);
@@ -194,7 +195,7 @@ function App() {
 
   const handleSaveEdit = async (id) => {
     try {
-      await axios.put(`http://localhost:3000/api/employees/${id}`, editFormData);
+      await axios.put(`${import.meta.env.VITE_API_URL}/api/employees/${id}`, editFormData);
       setEditingEmployeeId(null);
       fetchData();
     } catch (err) {
@@ -205,7 +206,7 @@ function App() {
   const handleDeleteLeave = async (id) => {
     if (!window.confirm("Are you sure you want to delete this leave request?")) return;
     try {
-      await axios.delete(`http://localhost:3000/api/leaves/${id}`);
+      await axios.delete(`${import.meta.env.VITE_API_URL}/api/leaves/${id}`);
       fetchData();
     } catch (err) {
       console.error('Error deleting leave', err);
@@ -300,7 +301,7 @@ function App() {
   }
 
   // Compute aggregated app usage
-  const appUsageSummary = detailedData && detailedData.appActivities ? 
+  const appUsageSummary = detailedData && Array.isArray(detailedData.appActivities) ? 
     Object.entries(detailedData.appActivities.reduce((acc, act) => {
       acc[act.appName] = (acc[act.appName] || 0) + act.durationSec;
       return acc;
