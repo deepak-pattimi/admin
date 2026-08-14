@@ -1,6 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
+import * as XLSX from 'xlsx';
+
+const Loader = () => (
+  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '60px', animation: 'fadeIn 0.3s ease-out' }}>
+    <svg width="44" height="44" viewBox="0 0 50 50" style={{ animation: 'spin 1s linear infinite' }}>
+      <circle cx="25" cy="25" r="20" fill="none" stroke="rgba(148, 163, 184, 0.2)" strokeWidth="4"></circle>
+      <circle cx="25" cy="25" r="20" fill="none" stroke="#38bdf8" strokeWidth="4" strokeDasharray="31.4 100" strokeLinecap="round"></circle>
+    </svg>
+    <div style={{ marginTop: '16px', color: '#94a3b8', fontSize: '14px', fontWeight: '500', letterSpacing: '0.5px' }}>LOADING DATA...</div>
+    <style>{`@keyframes spin { 100% { transform: rotate(360deg); } } @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }`}</style>
+  </div>
+);
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem('adminAuth') === 'true');
@@ -16,7 +28,7 @@ function App() {
   const [newEmployee, setNewEmployee] = useState({ name: '', email: '' });
   const [isAddingEmployee, setIsAddingEmployee] = useState(false);
   const [editingEmployeeId, setEditingEmployeeId] = useState(null);
-  
+
   // Detailed View State
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
   const [detailedDate, setDetailedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -28,10 +40,21 @@ function App() {
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split('T')[0]);
   const [dailyAttendanceData, setDailyAttendanceData] = useState([]);
 
+  // Salary Tab State
+  const [salaryMonth, setSalaryMonth] = useState(new Date().toISOString().substring(0, 7)); // e.g. "2026-08"
+  const [salaryReport, setSalaryReport] = useState([]);
+  const [loadingSalary, setLoadingSalary] = useState(false);
+  const [salarySearch, setSalarySearch] = useState('');
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
-  const [editFormData, setEditFormData] = useState({ name: '', email: '' });
+  const [editFormData, setEditFormData] = useState({ newId: '', name: '', email: '', password: '' });
   const [processingLeaves, setProcessingLeaves] = useState({});
+  const [uiTick, setUiTick] = useState(0);
+
+  const [loadingLeaves, setLoadingLeaves] = useState(true);
+  const [loadingLive, setLoadingLive] = useState(true);
+  const [loadingAttendance, setLoadingAttendance] = useState(true);
 
   const pendingLeavesCount = leaves.filter(l => l.status === 'PENDING').length;
 
@@ -40,6 +63,7 @@ function App() {
   }, [activeTab]);
 
   const fetchData = async () => {
+    if (employees.length === 0) setLoadingLeaves(true);
     try {
       const leavesRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/leaves`);
       setLeaves(Array.isArray(leavesRes.data) ? leavesRes.data : []);
@@ -47,15 +71,20 @@ function App() {
       setEmployees(Array.isArray(empRes.data) ? empRes.data : []);
     } catch (err) {
       console.error('Error fetching data', err);
+    } finally {
+      setLoadingLeaves(false);
     }
   };
 
   const fetchLiveData = async () => {
+    if (liveData.length === 0) setLoadingLive(true);
     try {
       const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/live`);
       setLiveData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch live data', err);
+    } finally {
+      setLoadingLive(false);
     }
   };
 
@@ -68,12 +97,77 @@ function App() {
     }
   };
 
+  const downloadTodaysReport = () => {
+    if (dailyAttendanceData.length === 0) return alert('No data to download for today.');
+    const ws = XLSX.utils.json_to_sheet(dailyAttendanceData.map(emp => ({
+      'Employee Name': emp.name,
+      'Employee ID': emp.employeeId,
+      'Department': emp.department,
+      'Clock In': emp.clockIn ? new Date(emp.clockIn).toLocaleTimeString() : '--',
+      'Clock Out': emp.clockOut ? new Date(emp.clockOut).toLocaleTimeString() : (emp.clockIn ? 'Active' : '--'),
+      'Total Active (hrs)': Number((emp.totalMinutes / 60).toFixed(2)),
+      'Status': emp.totalMinutes >= 420 ? 'Present' : (emp.totalMinutes > 0 ? 'Requirement Not Met' : (emp.onLeave ? 'On Leave' : 'Absent'))
+    })));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Today Report");
+    XLSX.writeFile(wb, `Daily_Attendance_${attendanceDate}.xlsx`);
+  };
+
+  const downloadMonthlyReport = async () => {
+    try {
+      const monthStr = attendanceDate.substring(0, 7); // e.g. "2026-07"
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/monthly?month=${monthStr}`);
+      const data = res.data;
+      if (data.length === 0) return alert('No data to download for this month.');
+      
+      const ws = XLSX.utils.json_to_sheet(data.map(row => {
+        const isLate = row.clockIn && new Date(row.clockIn).getHours() >= 10;
+        let status = 'Present';
+        if (row.totalMinutes < 420) status = 'Requirement Not Met';
+        if (!row.clockIn) status = 'Absent';
+
+        return {
+          'Date': row.date,
+          'Employee Name': row.name,
+          'Employee ID': row.employeeId,
+          'Department': row.department,
+          'Clock In': row.clockIn ? new Date(row.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+          'Clock Out': row.clockOut ? new Date(row.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+          'Total Active (hrs)': Number((row.totalMinutes / 60).toFixed(2)),
+          'Status': isLate ? `${status} (Late)` : status,
+          'App Usage Breakdown': row.appUsageStr
+        };
+      }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Monthly Report");
+      XLSX.writeFile(wb, `Monthly_Attendance_${monthStr}.xlsx`);
+    } catch (err) {
+      console.error('Failed to download monthly report', err);
+      alert('Failed to download monthly report');
+    }
+  };
+
   const fetchDailyAttendance = async (dateStr) => {
+    setLoadingAttendance(true);
     try {
       const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/daily?date=${dateStr}`);
       setDailyAttendanceData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch daily attendance', err);
+    } finally {
+      setLoadingAttendance(false);
+    }
+  };
+
+  const fetchSalaryReport = async (monthStr) => {
+    setLoadingSalary(true);
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/salary/monthly?month=${monthStr}`);
+      setSalaryReport(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('Failed to fetch salary report', err);
+    } finally {
+      setLoadingSalary(false);
     }
   };
 
@@ -87,16 +181,33 @@ function App() {
     if (isAuthenticated) {
       fetchDailyAttendance(attendanceDate);
     }
-  }, [attendanceDate, isAuthenticated, lastUpdate]);
+  }, [attendanceDate, isAuthenticated]);
+
+  useEffect(() => {
+    if (isAuthenticated && activeTab === 'salary') {
+      fetchSalaryReport(salaryMonth);
+    }
+  }, [salaryMonth, isAuthenticated, activeTab]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    fetchData(); 
+    fetchData();
     fetchLiveData();
+
+    // Fetch state data every 30 seconds
+    const dataFetchInterval = setInterval(() => {
+      fetchLiveData();
+      fetchData();
+    }, 30000);
+
+    // 1-second UI refresh
+    const uiRefreshInterval = setInterval(() => {
+      setUiTick(prev => prev + 1);
+    }, 1000);
 
     // Connect WebSocket for real-time updates
     const socket = io(import.meta.env.VITE_API_URL);
-    
+
     socket.on('data-update', () => {
       fetchData();
     });
@@ -119,6 +230,8 @@ function App() {
     });
 
     return () => {
+      clearInterval(dataFetchInterval);
+      clearInterval(uiRefreshInterval);
       socket.disconnect();
     };
   }, [isAuthenticated]);
@@ -154,13 +267,13 @@ function App() {
     const start = new Date(leave.startDate).toLocaleDateString();
     const end = new Date(leave.endDate).toLocaleDateString();
     let dates = start === end ? start : `${start} to ${end}`;
-    
+
     if (leave.leaveType === 'HALF_DAY') {
       dates += ` (Half Day - ${leave.duration})`;
     } else if (leave.leaveType === 'HOURLY') {
       dates += ` (Hourly - ${leave.duration} Hours)`;
     }
-    
+
     return dates;
   };
 
@@ -169,7 +282,7 @@ function App() {
     setIsAddingEmployee(true);
     try {
       await axios.post(`${import.meta.env.VITE_API_URL}/api/employees`, newEmployee);
-      setNewEmployee({ name: '', email: '' });
+      setNewEmployee({ name: '', email: '', monthlySalary: '' });
       fetchData();
     } catch (err) {
       alert(err.response?.data?.error || 'Error adding employee');
@@ -190,7 +303,7 @@ function App() {
 
   const handleEditClick = (emp) => {
     setEditingEmployeeId(emp.id);
-    setEditFormData({ name: emp.name, email: emp.email });
+    setEditFormData({ newId: emp.id, name: emp.name, email: emp.email, password: emp.password || '', monthlySalary: emp.monthlySalary || '' });
   };
 
   const handleSaveEdit = async (id) => {
@@ -244,28 +357,28 @@ function App() {
       <div className="login-wrapper" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', fontFamily: "'Inter', sans-serif" }}>
         <div className="glass-panel floating-animation" style={{ width: '400px', margin: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '30px', background: 'rgba(255,255,255,0.8)', padding: '15px', borderRadius: '12px' }}>
-            <img src="/logo.png" alt="Subhada Polymers" style={{ height: '60px', objectFit: 'contain' }} />
+            <img src="/logo.png" alt="Subhada Polymers" style={{ height: '100px', objectFit: 'contain' }} />
           </div>
           <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-            <input 
-              type="email" 
-              placeholder="Admin Email" 
-              className="edit-input" 
-              value={authForm.email} 
-              onChange={e => setAuthForm({...authForm, email: e.target.value})} 
-              required 
+            <input
+              type="email"
+              placeholder="Admin Email"
+              className="edit-input"
+              value={authForm.email}
+              onChange={e => setAuthForm({ ...authForm, email: e.target.value })}
+              required
             />
             <div style={{ position: 'relative' }}>
-              <input 
-                type={showPassword ? "text" : "password"} 
-                placeholder="Password" 
-                className="edit-input" 
-                value={authForm.password} 
-                onChange={e => setAuthForm({...authForm, password: e.target.value})} 
-                required 
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder="Password"
+                className="edit-input"
+                value={authForm.password}
+                onChange={e => setAuthForm({ ...authForm, password: e.target.value })}
+                required
               />
-              <span 
-                onClick={() => setShowPassword(!showPassword)} 
+              <span
+                onClick={() => setShowPassword(!showPassword)}
                 style={{ position: 'absolute', right: '15px', top: '50%', transform: 'translateY(-50%)', cursor: 'pointer', opacity: 0.7, fontSize: '18px' }}
                 title={showPassword ? "Hide Password" : "Show Password"}
               >
@@ -301,11 +414,11 @@ function App() {
   }
 
   // Compute aggregated app usage
-  const appUsageSummary = detailedData && Array.isArray(detailedData.appActivities) ? 
+  const appUsageSummary = detailedData && Array.isArray(detailedData.appActivities) ?
     Object.entries(detailedData.appActivities.reduce((acc, act) => {
       acc[act.appName] = (acc[act.appName] || 0) + act.durationSec;
       return acc;
-    }, {})).sort((a, b) => b[1] - a[1]).map(([appName, durationSec]) => ({ appName, durationSec })) 
+    }, {})).sort((a, b) => b[1] - a[1]).map(([appName, durationSec]) => ({ appName, durationSec }))
     : [];
 
   return (
@@ -316,7 +429,7 @@ function App() {
       {/* SIDEBAR */}
       <aside className={`sidebar ${isMobileMenuOpen ? 'open' : ''}`}>
         <div className="sidebar-brand">
-          <img src="/logo.png" alt="Subhada Polymers" style={{ width: '100%', maxHeight: '50px', objectFit: 'contain' }} />
+          <img src="/logo.png" alt="Subhada Polymers" style={{ width: '100%', maxHeight: '90px', objectFit: 'contain' }} />
         </div>
         <nav className="sidebar-nav">
           <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('dashboard'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}>
@@ -330,6 +443,9 @@ function App() {
           </a>
           <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('attendance'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'attendance' ? 'active' : ''}`}>
             <span className="nav-icon">📋</span> Attendance Log
+          </a>
+          <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('salary'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'salary' ? 'active' : ''}`}>
+            <span className="nav-icon">💰</span> Salary Summary
           </a>
           <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('live'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'live' ? 'active' : ''}`}>
             <span className="nav-icon">📍</span> Live Tracking
@@ -361,7 +477,7 @@ function App() {
               ☰
             </button>
             <h1 className="page-title" style={{ margin: 0 }}>
-              {activeTab === 'employees' ? 'Employees Directory' : activeTab === 'leaves' ? 'Leave Requests' : activeTab === 'live' ? 'Live Tracking' : activeTab === 'attendance' ? 'Attendance Log' : 'Overview Dashboard'}
+              {activeTab === 'employees' ? 'Employees Directory' : activeTab === 'leaves' ? 'Leave Requests' : activeTab === 'live' ? 'Live Tracking' : activeTab === 'attendance' ? 'Attendance Log' : activeTab === 'salary' ? 'Salary Summary' : 'Overview Dashboard'}
             </h1>
           </div>
           <div className="header-actions">
@@ -377,9 +493,10 @@ function App() {
         </header>
 
         <div className="dashboard-grid fade-in-up">
-          
+
           {/* DASHBOARD TAB */}
           {activeTab === 'dashboard' && (
+            loadingLeaves ? <Loader /> : (
             <div className="glass-panel stats-grid">
               <div className="stat-card">
                 <h3>Total Employees</h3>
@@ -390,16 +507,34 @@ function App() {
                 <div className="stat-value" style={{ color: '#f59e0b' }}>{pendingLeavesCount}</div>
               </div>
             </div>
+            )
           )}
 
           {/* EMPLOYEES TAB */}
           {activeTab === 'employees' && (
+            loadingLeaves ? <Loader /> : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
               <div className="glass-panel">
                 <h2 className="section-title">Add New Employee</h2>
                 <form onSubmit={handleAddEmployee} className="add-emp-form">
-                  <input type="text" placeholder="Full Name" value={newEmployee.name} onChange={e => setNewEmployee({...newEmployee, name: e.target.value})} required />
-                  <input type="email" placeholder="Email Address" value={newEmployee.email} onChange={e => setNewEmployee({...newEmployee, email: e.target.value})} required />
+                  <input type="text" placeholder="Full Name" value={newEmployee.name} onChange={e => setNewEmployee({ ...newEmployee, name: e.target.value })} required />
+                  <input type="email" placeholder="Email Address" value={newEmployee.email} onChange={e => setNewEmployee({ ...newEmployee, email: e.target.value })} required />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: '1 1 200px' }}>
+                    <input 
+                      type="number" 
+                      placeholder="Monthly Salary (₹)" 
+                      value={newEmployee.monthlySalary} 
+                      onChange={e => setNewEmployee({ ...newEmployee, monthlySalary: e.target.value })} 
+                      min="0" 
+                      step="any"
+                    />
+                    {newEmployee.monthlySalary > 0 && (
+                      <div style={{ fontSize: '11px', color: '#10b981', fontWeight: '600', paddingLeft: '4px', display: 'flex', flexDirection: 'column' }}>
+                        <span>≈ ₹{(newEmployee.monthlySalary / 24).toFixed(2)} / day (24 days)</span>
+                        <span>≈ ₹{((newEmployee.monthlySalary / 24) / 8).toFixed(2)} / hr (8 hrs/day)</span>
+                      </div>
+                    )}
+                  </div>
                   <button type="submit" disabled={isAddingEmployee} className="btn btn-primary" style={{ minWidth: '120px' }}>
                     {isAddingEmployee ? 'Adding...' : 'Add Employee'}
                   </button>
@@ -414,6 +549,7 @@ function App() {
                       <tr>
                         <th>ID Code</th>
                         <th>Details</th>
+                        <th>Salary Details</th>
                         <th style={{ textAlign: 'right' }}>Actions</th>
                       </tr>
                     </thead>
@@ -421,18 +557,59 @@ function App() {
                       {employees.map(emp => (
                         <tr key={emp.id} className="table-row">
                           <td>
-                            <span className="code-badge">{emp.id}</span>
+                            {editingEmployeeId === emp.id ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                <input type="text" className="edit-input" placeholder="ID Code" value={editFormData.newId} onChange={e => setEditFormData({ ...editFormData, newId: e.target.value })} />
+                                <input type="text" className="edit-input" placeholder="Password" value={editFormData.password} onChange={e => setEditFormData({ ...editFormData, password: e.target.value })} />
+                              </div>
+                            ) : (
+                              <div>
+                                <span className="code-badge">{emp.id}</span>
+                                {emp.password && <div style={{ fontSize: '12px', color: '#64748b', marginTop: '8px', fontWeight: '500' }}>Pwd: {emp.password}</div>}
+                              </div>
+                            )}
                           </td>
                           <td>
                             {editingEmployeeId === emp.id ? (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                <input type="text" className="edit-input" value={editFormData.name} onChange={e => setEditFormData({...editFormData, name: e.target.value})} />
-                                <input type="email" className="edit-input" value={editFormData.email} onChange={e => setEditFormData({...editFormData, email: e.target.value})} />
+                                <input type="text" className="edit-input" placeholder="Name" value={editFormData.name} onChange={e => setEditFormData({ ...editFormData, name: e.target.value })} />
+                                <input type="email" className="edit-input" placeholder="Email" value={editFormData.email} onChange={e => setEditFormData({ ...editFormData, email: e.target.value })} />
                               </div>
                             ) : (
                               <div>
                                 <div className="emp-name">{emp.name}</div>
                                 <div className="emp-email">{emp.email}</div>
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {editingEmployeeId === emp.id ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <input 
+                                  type="number" 
+                                  className="edit-input" 
+                                  placeholder="Monthly Salary (₹)" 
+                                  value={editFormData.monthlySalary} 
+                                  onChange={e => setEditFormData({ ...editFormData, monthlySalary: e.target.value })} 
+                                />
+                                {editFormData.monthlySalary > 0 && (
+                                  <div style={{ fontSize: '11px', color: '#10b981', fontWeight: '600', display: 'flex', flexDirection: 'column' }}>
+                                    <span>≈ ₹{(editFormData.monthlySalary / 24).toFixed(2)}/day</span>
+                                    <span>≈ ₹{((editFormData.monthlySalary / 24) / 8).toFixed(2)}/hr</span>
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div>
+                                <div style={{ fontWeight: '600', color: '#0f172a', fontSize: '13px' }}>
+                                  ₹{Number(emp.monthlySalary || 0).toLocaleString('en-IN')} <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 'normal' }}>/ month</span>
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#10b981', fontWeight: '600', marginTop: '2px' }}>
+                                  ₹{Number(emp.dailySalary || (emp.monthlySalary ? emp.monthlySalary / 24 : 0)).toLocaleString('en-IN')} <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 'normal' }}>/ day (24 days)</span>
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#8b5cf6', fontWeight: '600', marginTop: '2px' }}>
+                                  ₹{Number(emp.hourlySalary || (emp.monthlySalary ? (emp.monthlySalary / 24) / 8 : 0)).toLocaleString('en-IN')} <span style={{ fontSize: '10px', color: '#64748b', fontWeight: 'normal' }}>/ hr (8 hrs/day)</span>
+                                </div>
                               </div>
                             )}
                           </td>
@@ -458,10 +635,12 @@ function App() {
                 </div>
               </div>
             </div>
+            )
           )}
 
           {/* LEAVES TAB */}
           {activeTab === 'leaves' && (
+            loadingLeaves ? <Loader /> : (
             <div className="glass-panel">
               <h2 className="section-title">Leave Requests</h2>
               <div className="table-container">
@@ -512,10 +691,12 @@ function App() {
                 </table>
               </div>
             </div>
+            )
           )}
 
           {/* LIVE TRACKING TAB */}
           {activeTab === 'live' && (
+            loadingLive ? <Loader /> : (
             <div className="glass-panel">
               <h2 className="section-title">Live Employee Tracking</h2>
               <div className="live-grid">
@@ -525,25 +706,28 @@ function App() {
                       <div className="emp-name">{emp.name}</div>
                       <div className={`pulse-indicator ${emp.status.toLowerCase()}`}></div>
                     </div>
-                    <div className="emp-email" style={{marginBottom: '15px'}}>{emp.department} • {emp.employeeId}</div>
-                    
+                    <div className="emp-email" style={{ marginBottom: '15px' }}>{emp.department} • {emp.employeeId}</div>
+
                     <div className="live-card-stats">
                       <div className="stat-box">
                         <span className="stat-label">STATUS</span>
-                        <span className={`status-badge ${emp.status.toLowerCase()}`}>{emp.status}</span>
+                        <span className={`status-badge ${emp.status.toLowerCase()}`}>
+                          {emp.status === 'ADMIN_DECLINED' ? 'Access Declined' : emp.status === 'TEMP_ACTIVE' ? `Temp Active: ${emp.tempReason || ''}` : emp.status}
+                        </span>
                       </div>
                       <div className="stat-box">
                         <span className="stat-label">ACTIVE HOURS</span>
-                        <strong style={{color: '#0ea5e9'}}>{Math.floor(emp.totalMinutes / 60)}h {emp.totalMinutes % 60}m</strong>
+                        <strong style={{ color: '#0ea5e9' }}>{Math.floor(emp.totalMinutes / 60)}h {emp.totalMinutes % 60}m</strong>
                       </div>
                     </div>
                   </div>
                 ))}
                 {liveData.length === 0 && (
-                  <div style={{gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8'}}>No active employees found.</div>
+                  <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '40px', color: '#94a3b8' }}>No active employees found.</div>
                 )}
               </div>
             </div>
+            )
           )}
 
           {/* ATTENDANCE LOG TAB */}
@@ -551,13 +735,18 @@ function App() {
             <div className="glass-panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h2 className="section-title" style={{ margin: 0 }}>Daily Attendance Ledger</h2>
-                <div className="date-selector">
-                  <button className="btn-neutral date-arrow" onClick={handlePrevDate}>&lt;</button>
-                  <input type="date" className="edit-input date-picker-input" value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} />
-                  <button className="btn-neutral date-arrow" onClick={handleNextDate}>&gt;</button>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <button className="btn btn-primary" onClick={downloadTodaysReport}>Download Today's Report</button>
+                  <button className="btn btn-neutral" onClick={downloadMonthlyReport}>Download Monthly Report</button>
+                  <div className="date-selector">
+                    <button className="btn-neutral date-arrow" onClick={handlePrevDate}>&lt;</button>
+                    <input type="date" className="edit-input date-picker-input" value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} />
+                    <button className="btn-neutral date-arrow" onClick={handleNextDate}>&gt;</button>
+                  </div>
                 </div>
               </div>
 
+              {loadingAttendance ? <Loader /> : (
               <div className="table-container">
                 <table className="premium-table">
                   <thead>
@@ -584,8 +773,14 @@ function App() {
                           <td>
                             {emp.clockIn ? (
                               <div>
-                                <strong style={{ color: isLate ? '#ef4444' : '#0f172a' }}>{new Date(emp.clockIn).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</strong>
+                                <strong style={{ color: isLate ? '#ef4444' : '#0f172a' }}>{new Date(emp.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
                                 {isLate && <span className="penalty-badge">Late Login</span>}
+                                {emp.systemBootTime && (
+                                  <div style={{ fontSize: '11px', color: '#f59e0b', marginTop: '4px', fontWeight: '500' }}>System Active: {new Date(emp.systemBootTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                                )}
+                                {emp.tempReason && (
+                                  <div style={{ fontSize: '11px', color: '#3b82f6', marginTop: '4px', fontWeight: '500' }}>Temp Logout: {emp.tempReason}</div>
+                                )}
                               </div>
                             ) : (
                               <span style={{ color: '#94a3b8' }}>--</span>
@@ -594,11 +789,15 @@ function App() {
                           <td>
                             {emp.clockOut ? (
                               <div>
-                                <strong style={{ color: isEarly ? '#ef4444' : '#0f172a' }}>{new Date(emp.clockOut).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</strong>
+                                <strong style={{ color: isEarly ? '#ef4444' : '#0f172a' }}>{new Date(emp.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</strong>
                                 {isEarly && <span className="penalty-badge">Early Logout</span>}
                               </div>
                             ) : emp.clockIn ? (
-                              <span style={{ color: '#3b82f6', fontWeight: '500' }}>Still Active</span>
+                              attendanceDate === new Date().toISOString().split('T')[0] ? (
+                                <span style={{ color: '#3b82f6', fontWeight: '500' }}>Still Active</span>
+                              ) : (
+                                <span style={{ color: '#ef4444', fontWeight: '500' }}>Missing Logout</span>
+                              )
                             ) : (
                               <span style={{ color: '#94a3b8' }}>--</span>
                             )}
@@ -623,11 +822,94 @@ function App() {
                       );
                     })}
                     {dailyAttendanceData.length === 0 && (
-                      <tr><td colSpan="5" style={{textAlign: 'center', padding: '30px', color: '#94a3b8'}}>No employees found.</td></tr>
+                      <tr><td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No employees found.</td></tr>
                     )}
                   </tbody>
                 </table>
               </div>
+              )}
+            </div>
+          )}
+
+          {/* SALARY TAB */}
+          {activeTab === 'salary' && (
+            <div className="glass-panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '20px' }}>
+                <h2 className="section-title" style={{ margin: 0 }}>Monthly Salary Report</h2>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    type="month"
+                    className="edit-input"
+                    style={{ width: '160px', margin: 0 }}
+                    value={salaryMonth}
+                    onChange={(e) => setSalaryMonth(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    className="edit-input"
+                    style={{ width: '200px', margin: 0 }}
+                    placeholder="Search employee..."
+                    value={salarySearch}
+                    onChange={(e) => setSalarySearch(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {loadingSalary ? <Loader /> : (
+                <div className="table-container">
+                  <table className="premium-table">
+                    <thead>
+                      <tr>
+                        <th>Employee Name</th>
+                        <th style={{ textAlign: 'center' }}>Days Present</th>
+                        <th style={{ textAlign: 'center' }}>Req Not Met Days</th>
+                        <th style={{ textAlign: 'center' }}>Hours Active</th>
+                        <th style={{ textAlign: 'right' }}>Salary Acquired</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {salaryReport
+                        .filter(item => item.name.toLowerCase().includes(salarySearch.toLowerCase()) || item.email.toLowerCase().includes(salarySearch.toLowerCase()))
+                        .map(emp => (
+                          <tr key={emp.id} className="table-row">
+                            <td>
+                              <div className="emp-name">{emp.name}</div>
+                              <div className="emp-email" style={{ fontSize: '11px', color: '#64748b' }}>{emp.email}</div>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <span className="status-badge glow-approved" style={{ display: 'inline-block', width: 'auto', padding: '4px 10px' }}>
+                                {emp.daysPresent} days
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              {emp.reqNotMetDays > 0 ? (
+                                <span className="status-badge glow-rejected" style={{ display: 'inline-block', width: 'auto', padding: '4px 10px', background: '#fef2f2', color: '#ef4444' }}>
+                                  ⚠️ {emp.reqNotMetDays} days
+                                </span>
+                              ) : (
+                                <span style={{ color: '#94a3b8', fontSize: '13px' }}>0</span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: '600', color: '#334155' }}>
+                              ⏱️ {emp.hoursActive} hrs
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ fontWeight: 'bold', color: '#10b981', fontSize: '14px' }}>
+                                ₹{Number(emp.salaryAcquired || 0).toLocaleString('en-IN')}
+                              </div>
+                              <div style={{ fontSize: '10px', color: '#64748b' }}>
+                                (₹{emp.hourlySalary || (emp.dailySalary ? (emp.dailySalary / 8).toFixed(2) : 0)} / hr)
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      {salaryReport.length === 0 && (
+                        <tr><td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No salary data available for this month.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -640,28 +922,38 @@ function App() {
             <button className="floating-close-btn" style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 20, margin: 0 }} onClick={() => setSelectedEmployeeId(null)}>
               ✕ Close
             </button>
-            
+
             {detailedData ? (
               <>
                 {/* --- MOBILE LAYOUT (1 Column + Buttons) --- */}
                 <div className="mobile-only-layout" style={{ flexDirection: 'column', gap: '20px', flex: 1, overflow: 'hidden' }}>
-                  
+
                   {/* TOP SECTION: Details & Actions */}
                   <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start' }} className="modal-top-section">
-                    
+
                     {/* LEFT: Details */}
                     <div className="floating-section" style={{ padding: '20px', flex: 1 }}>
                       <div className="modal-header" style={{ marginBottom: '15px' }}>
                         <h2 style={{ margin: 0, fontSize: '18px' }}>{detailedData.employee.name}</h2>
-                        <input 
-                          type="date" 
-                          className="edit-input" 
-                          style={{ width: '130px', margin: 0, padding: '5px' }}
-                          value={detailedDate}
-                          onChange={(e) => setDetailedDate(e.target.value)}
-                        />
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <input
+                            type="date"
+                            className="edit-input"
+                            style={{ width: '130px', margin: 0, padding: '5px' }}
+                            value={detailedDate}
+                            onChange={(e) => setDetailedDate(e.target.value)}
+                          />
+                          <button 
+                            className="btn btn-neutral" 
+                            style={{ padding: '5px 10px', height: '32px', display: 'flex', alignItems: 'center' }} 
+                            onClick={() => fetchDetailedData(selectedEmployeeId, detailedDate)}
+                            title="Refresh Data"
+                          >
+                            🔄
+                          </button>
+                        </div>
                       </div>
-                      
+
                       <div className="timeline-summary" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Total Active</span>
@@ -669,11 +961,11 @@ function App() {
                         </div>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Clock In</span>
-                          <strong>{detailedData.attendance?.clockIn ? new Date(detailedData.attendance.clockIn).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--'}</strong>
+                          <strong>{detailedData.attendance?.clockIn ? new Date(detailedData.attendance.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}</strong>
                         </div>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Clock Out</span>
-                          <strong>{detailedData.attendance?.clockOut ? new Date(detailedData.attendance.clockOut).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : (detailedData.attendance?.clockIn ? 'Active' : '--')}</strong>
+                          <strong>{detailedData.attendance?.clockOut ? new Date(detailedData.attendance.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (detailedData.attendance?.clockIn ? 'Active' : '--')}</strong>
                         </div>
                       </div>
                     </div>
@@ -696,7 +988,7 @@ function App() {
                       {detailedData.timeline && detailedData.timeline.length > 0 ? detailedData.timeline.map((act, idx) => (
                         <div className="timeline-item" key={act.id || idx}>
                           <div className="timeline-time">
-                            {new Date(act.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </div>
                           <div className="timeline-marker">
                             <div className={`marker-dot ${act.status.toLowerCase()}`}></div>
@@ -705,7 +997,7 @@ function App() {
                           <div className="timeline-content" style={{ paddingBottom: '25px' }}>
                             <span style={{ color: '#64748b' }}>Status changed to</span>{' '}
                             <span className={`status-badge ${act.status.toLowerCase()}`} style={{ padding: '4px 8px', fontSize: '11px', verticalAlign: 'middle', marginLeft: '5px' }}>
-                              {act.status}
+                              {act.status === 'TEMP_ACTIVE' ? `Temp Active: ${act.tempReason || ''}` : act.status}
                             </span>
                           </div>
                         </div>
@@ -718,22 +1010,32 @@ function App() {
 
                 {/* --- DESKTOP LAYOUT (3 Columns) --- */}
                 <div className="desktop-only-layout modal-columns" style={{ flexDirection: 'row', gap: '20px', flex: 1, overflow: 'hidden' }}>
-                  
+
                   {/* LEFT COLUMN: Details + System Activity */}
                   <div className="left-column" style={{ display: 'flex', flexDirection: 'column', gap: '20px', flex: 1, overflow: 'hidden' }}>
                     {/* SECTION 1: Details */}
                     <div className="floating-section" style={{ padding: '20px' }}>
                       <div className="modal-header" style={{ marginBottom: '15px' }}>
                         <h2 style={{ margin: 0, fontSize: '18px' }}>{detailedData.employee.name}</h2>
-                        <input 
-                          type="date" 
-                          className="edit-input" 
-                          style={{ width: '130px', margin: 0, padding: '5px' }}
-                          value={detailedDate}
-                          onChange={(e) => setDetailedDate(e.target.value)}
-                        />
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <input
+                            type="date"
+                            className="edit-input"
+                            style={{ width: '130px', margin: 0, padding: '5px' }}
+                            value={detailedDate}
+                            onChange={(e) => setDetailedDate(e.target.value)}
+                          />
+                          <button 
+                            className="btn btn-neutral" 
+                            style={{ padding: '5px 10px', height: '32px', display: 'flex', alignItems: 'center' }} 
+                            onClick={() => fetchDetailedData(selectedEmployeeId, detailedDate)}
+                            title="Refresh Data"
+                          >
+                            🔄
+                          </button>
+                        </div>
                       </div>
-                      
+
                       <div className="timeline-summary" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column', gap: '10px' }}>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Total Active</span>
@@ -741,11 +1043,11 @@ function App() {
                         </div>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Clock In</span>
-                          <strong>{detailedData.attendance?.clockIn ? new Date(detailedData.attendance.clockIn).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '--'}</strong>
+                          <strong>{detailedData.attendance?.clockIn ? new Date(detailedData.attendance.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}</strong>
                         </div>
                         <div className="summary-box" style={{ flex: 1, padding: '10px' }}>
                           <span>Clock Out</span>
-                          <strong>{detailedData.attendance?.clockOut ? new Date(detailedData.attendance.clockOut).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : (detailedData.attendance?.clockIn ? 'Active' : '--')}</strong>
+                          <strong>{detailedData.attendance?.clockOut ? new Date(detailedData.attendance.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (detailedData.attendance?.clockIn ? 'Active' : '--')}</strong>
                         </div>
                       </div>
                     </div>
@@ -754,27 +1056,27 @@ function App() {
                     <div className="floating-section" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                       <h3 style={{ marginTop: 0, marginBottom: '20px' }}>System Activity</h3>
                       <div className="timeline" style={{ overflowY: 'auto', flex: 1, paddingRight: '10px' }}>
-                      {detailedData.timeline && detailedData.timeline.length > 0 ? detailedData.timeline.map((act, idx) => (
-                        <div className="timeline-item" key={act.id || idx}>
-                          <div className="timeline-time">
-                            {new Date(act.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        {detailedData.timeline && detailedData.timeline.length > 0 ? detailedData.timeline.map((act, idx) => (
+                          <div className="timeline-item" key={act.id || idx}>
+                            <div className="timeline-time">
+                              {new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                            <div className="timeline-marker">
+                              <div className={`marker-dot ${act.status.toLowerCase()}`}></div>
+                              {idx !== detailedData.timeline.length - 1 && <div className="marker-line"></div>}
+                            </div>
+                            <div className="timeline-content" style={{ paddingBottom: '25px' }}>
+                              <span style={{ color: '#64748b' }}>Status changed to</span>{' '}
+                              <span className={`status-badge ${act.status.toLowerCase()}`} style={{ padding: '4px 8px', fontSize: '11px', verticalAlign: 'middle', marginLeft: '5px' }}>
+                                {act.status === 'TEMP_ACTIVE' ? `Temp Active: ${act.tempReason || ''}` : act.status}
+                              </span>
+                            </div>
                           </div>
-                          <div className="timeline-marker">
-                            <div className={`marker-dot ${act.status.toLowerCase()}`}></div>
-                            {idx !== detailedData.timeline.length - 1 && <div className="marker-line"></div>}
-                          </div>
-                          <div className="timeline-content" style={{ paddingBottom: '25px' }}>
-                            <span style={{ color: '#64748b' }}>Status changed to</span>{' '}
-                            <span className={`status-badge ${act.status.toLowerCase()}`} style={{ padding: '4px 8px', fontSize: '11px', verticalAlign: 'middle', marginLeft: '5px' }}>
-                              {act.status}
-                            </span>
-                          </div>
-                        </div>
-                      )) : (
-                        <div style={{ color: '#64748b', fontSize: '14px', fontStyle: 'italic' }}>No system activity recorded for this day.</div>
-                      )}
+                        )) : (
+                          <div style={{ color: '#64748b', fontSize: '14px', fontStyle: 'italic' }}>No system activity recorded for this day.</div>
+                        )}
+                      </div>
                     </div>
-                  </div>
                   </div> {/* End of Left Column */}
 
                   {/* MIDDLE COLUMN: App Activity */}
@@ -784,7 +1086,7 @@ function App() {
                       {detailedData.appActivities && detailedData.appActivities.length > 0 ? detailedData.appActivities.map((app, idx) => (
                         <div className="timeline-item" key={app.id || idx}>
                           <div className="timeline-time">
-                            {new Date(app.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            {new Date(app.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </div>
                           <div className="timeline-marker">
                             <div className="marker-dot active" style={{ background: '#3b82f6', boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.3)' }}></div>
@@ -840,7 +1142,7 @@ function App() {
             <button className="floating-close-btn" style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 10 }} onClick={() => setActiveSubModal(null)}>
               ✕ Close
             </button>
-            
+
             {activeSubModal === 'appActivity' && (
               <>
                 <h3 style={{ marginTop: 0, marginBottom: '20px' }}>App Activity</h3>
@@ -848,7 +1150,7 @@ function App() {
                   {detailedData?.appActivities && detailedData.appActivities.length > 0 ? detailedData.appActivities.map((app, idx) => (
                     <div className="timeline-item" key={app.id || idx}>
                       <div className="timeline-time">
-                        {new Date(app.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                        {new Date(app.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </div>
                       <div className="timeline-marker">
                         <div className="marker-dot active" style={{ background: '#3b82f6', boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.3)' }}></div>
@@ -920,7 +1222,7 @@ function App() {
           border: 1px solid rgba(255, 255, 255, 0.15);
           overflow: hidden;
         }
-        .sidebar-brand { padding: 30px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.9); margin: 20px; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
+        .sidebar-brand { padding: 20px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.9); margin: 20px; border-radius: 16px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); }
         .sidebar-nav { padding: 10px 20px; flex: 1; }
         .nav-item { display: flex; align-items: center; padding: 14px 18px; color: #e0f2fe; text-decoration: none; border-radius: 12px; margin-bottom: 8px; font-weight: 500; font-size: 15px; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
         .nav-item:hover { background: rgba(255, 255, 255, 0.15); color: white; transform: translateX(5px); }
@@ -1000,12 +1302,14 @@ function App() {
         .idle { background: rgba(250, 204, 21, 0.2); color: #a16207; border: 1px solid rgba(250, 204, 21, 0.3); }
         .offline { background: rgba(148, 163, 184, 0.2); color: #475569; border: 1px solid rgba(148, 163, 184, 0.3); }
         .locked { background: rgba(168, 85, 247, 0.2); color: #7e22ce; border: 1px solid rgba(168, 85, 247, 0.3); }
+        .admin_declined { background: rgba(239, 68, 68, 0.2); color: #b91c1c; border: 1px solid rgba(239, 68, 68, 0.3); }
         
         .pulse-indicator { width: 12px; height: 12px; border-radius: 50%; }
         .pulse-indicator.active { background: #4ade80; box-shadow: 0 0 12px #4ade80; animation: pulse 2s infinite; }
         .pulse-indicator.idle { background: #facc15; box-shadow: 0 0 12px #facc15; }
         .pulse-indicator.offline { background: #94a3b8; }
         .pulse-indicator.locked { background: #c084fc; box-shadow: 0 0 12px #c084fc; }
+        .pulse-indicator.admin_declined { background: #ef4444; box-shadow: 0 0 12px #ef4444; }
         
         @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); } 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); } }
 
