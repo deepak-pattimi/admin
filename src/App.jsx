@@ -308,11 +308,12 @@ function App() {
 
   const handleSaveEdit = async (id) => {
     try {
-      await axios.put(`${import.meta.env.VITE_API_URL}/api/employees/${id}`, editFormData);
+      const res = await axios.put(`${import.meta.env.VITE_API_URL}/api/employees/${id}`, editFormData);
       setEditingEmployeeId(null);
       fetchData();
     } catch (err) {
       console.error('Error updating employee', err);
+      alert(err.response?.data?.error || 'Failed to update employee details');
     }
   };
 
@@ -617,13 +618,13 @@ function App() {
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                               {editingEmployeeId === emp.id ? (
                                 <>
-                                  <button onClick={() => handleSaveEdit(emp.id)} className="btn btn-approve">Save</button>
-                                  <button onClick={() => setEditingEmployeeId(null)} className="btn btn-neutral">Cancel</button>
+                                  <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleSaveEdit(emp.id); }} className="btn btn-approve">Save</button>
+                                  <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setEditingEmployeeId(null); }} className="btn btn-neutral">Cancel</button>
                                 </>
                               ) : (
                                 <>
-                                  <button onClick={() => handleEditClick(emp)} className="btn btn-edit">Edit</button>
-                                  <button onClick={() => handleDeleteEmployee(emp.id)} className="btn btn-delete">Remove</button>
+                                  <button type="button" onClick={() => handleEditClick(emp)} className="btn btn-edit">Edit</button>
+                                  <button type="button" onClick={() => handleDeleteEmployee(emp.id)} className="btn btn-delete">Remove</button>
                                 </>
                               )}
                             </div>
