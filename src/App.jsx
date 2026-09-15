@@ -39,12 +39,18 @@ function App() {
   // Attendance Log State
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split('T')[0]);
   const [dailyAttendanceData, setDailyAttendanceData] = useState([]);
+  const [reportMonth, setReportMonth] = useState(new Date().toISOString().substring(0, 7));
 
   // Salary Tab State
   const [salaryMonth, setSalaryMonth] = useState(new Date().toISOString().substring(0, 7)); // e.g. "2026-08"
   const [salaryReport, setSalaryReport] = useState([]);
   const [loadingSalary, setLoadingSalary] = useState(false);
   const [salarySearch, setSalarySearch] = useState('');
+
+  // Calendar Tab State
+  const [calendarMonth, setCalendarMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [holidays, setHolidays] = useState([]);
+  const [loadingCalendar, setLoadingCalendar] = useState(false);
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -65,9 +71,11 @@ function App() {
   const fetchData = async () => {
     if (employees.length === 0) setLoadingLeaves(true);
     try {
+      console.log(`[FRONTEND LOG] Fetching data from API URL: ${import.meta.env.VITE_API_URL}`);
       const leavesRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/leaves`);
       setLeaves(Array.isArray(leavesRes.data) ? leavesRes.data : []);
       const empRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/employees`);
+      console.log('[FRONTEND LOG] Received Employees Data:', empRes.data);
       setEmployees(Array.isArray(empRes.data) ? empRes.data : []);
     } catch (err) {
       console.error('Error fetching data', err);
@@ -97,17 +105,34 @@ function App() {
     }
   };
 
+  const autoFitColumns = (ws, data) => {
+    if (!data || data.length === 0) return;
+    const objectKeys = Object.keys(data[0] || {});
+    ws['!cols'] = objectKeys.map(key => {
+      let maxLen = key.length;
+      data.forEach(row => {
+        const valStr = row[key] !== undefined && row[key] !== null ? String(row[key]) : '';
+        if (valStr.length > maxLen) {
+          maxLen = valStr.length;
+        }
+      });
+      return { wch: Math.max(maxLen + 4, 14) };
+    });
+  };
+
   const downloadTodaysReport = () => {
     if (dailyAttendanceData.length === 0) return alert('No data to download for today.');
-    const ws = XLSX.utils.json_to_sheet(dailyAttendanceData.map(emp => ({
+    const exportData = dailyAttendanceData.map(emp => ({
       'Employee Name': emp.name,
       'Employee ID': emp.employeeId,
       'Department': emp.department,
       'Clock In': emp.clockIn ? new Date(emp.clockIn).toLocaleTimeString() : '--',
       'Clock Out': emp.clockOut ? new Date(emp.clockOut).toLocaleTimeString() : (emp.clockIn ? 'Active' : '--'),
       'Total Active (hrs)': Number((emp.totalMinutes / 60).toFixed(2)),
-      'Status': emp.totalMinutes >= 420 ? 'Present' : (emp.totalMinutes > 0 ? 'Requirement Not Met' : (emp.onLeave ? 'On Leave' : 'Absent'))
-    })));
+      'Status': emp.totalMinutes >= 420 ? 'Present' : (emp.totalMinutes >= 60 ? 'Requirement Not Met' : (emp.onLeave ? 'On Leave' : 'Absent'))
+    }));
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    autoFitColumns(ws, exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Today Report");
     XLSX.writeFile(wb, `Daily_Attendance_${attendanceDate}.xlsx`);
@@ -120,11 +145,11 @@ function App() {
       const data = res.data;
       if (data.length === 0) return alert('No data to download for this month.');
       
-      const ws = XLSX.utils.json_to_sheet(data.map(row => {
+      const exportData = data.map(row => {
         const isLate = row.clockIn && new Date(row.clockIn).getHours() >= 10;
         let status = 'Present';
         if (row.totalMinutes < 420) status = 'Requirement Not Met';
-        if (!row.clockIn) status = 'Absent';
+        if (!row.clockIn || row.totalMinutes < 60) status = 'Absent';
 
         return {
           'Date': row.date,
@@ -137,7 +162,10 @@ function App() {
           'Status': isLate ? `${status} (Late)` : status,
           'App Usage Breakdown': row.appUsageStr
         };
-      }));
+      });
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      autoFitColumns(ws, exportData);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Monthly Report");
       XLSX.writeFile(wb, `Monthly_Attendance_${monthStr}.xlsx`);
@@ -145,6 +173,67 @@ function App() {
       console.error('Failed to download monthly report', err);
       alert('Failed to download monthly report');
     }
+  };
+
+  const downloadSimpleMonthlyReport = async () => {
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/monthly?month=${reportMonth}`);
+      const data = res.data;
+      if (data.length === 0) return alert('No data to download for this month.');
+      
+      const exportData = data.map(row => {
+        const isLate = row.clockIn && new Date(row.clockIn).getHours() >= 10;
+        let status = 'Present';
+        if (row.totalMinutes < 420) status = 'Requirement Not Met';
+        if (!row.clockIn || row.totalMinutes < 60) status = 'Absent';
+
+        return {
+          'Date': row.date,
+          'Employee Name': row.name,
+          'Employee ID': row.employeeId,
+          'Department': row.department,
+          'Clock In': row.clockIn ? new Date(row.clockIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+          'Clock Out': row.clockOut ? new Date(row.clockOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
+          'Total Active (hrs)': Number((row.totalMinutes / 60).toFixed(2)),
+          'Status': isLate ? `${status} (Late)` : status
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      autoFitColumns(ws, exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Simple Monthly Report");
+      XLSX.writeFile(wb, `Simple_Monthly_Attendance_${reportMonth}.xlsx`);
+    } catch (err) {
+      console.error('Failed to download simple monthly report', err);
+      alert('Failed to download simple monthly report');
+    }
+  };
+
+  const downloadSalaryReport = () => {
+    if (!salaryReport || salaryReport.length === 0) {
+      return alert('No salary data available to download for this month.');
+    }
+    
+    const exportData = salaryReport.map(emp => ({
+      'Employee Name': emp.name,
+      'Total Days': emp.totalDays,
+      'Days Present': emp.daysPresent,
+      'Days Absent': emp.daysAbsent,
+      'Holiday Working Days': emp.holidayWorkingDays || 0,
+      'Total Present Days (Inc. Sundays)': emp.totalPresentDaysIncSundays || (emp.daysPresent + (emp.holidayWorkingDays || 0)),
+      'Avg Login': emp.avgClockIn || '--',
+      'Avg Logout': emp.avgClockOut || '--',
+      'Hours Active': emp.hoursActive,
+      'Monthly Salary': emp.monthlySalary || 0,
+      'Salary Acquired': emp.salaryAcquired || 0
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    autoFitColumns(ws, exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Salary Summary");
+    XLSX.writeFile(wb, `Monthly_Salary_Report_${salaryMonth}.csv`, { bookType: 'csv' });
   };
 
   const fetchDailyAttendance = async (dateStr) => {
@@ -171,6 +260,31 @@ function App() {
     }
   };
 
+  const fetchHolidays = async (monthStr) => {
+    setLoadingCalendar(true);
+    try {
+      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/holidays?month=${monthStr}`);
+      setHolidays(Array.isArray(res.data) ? res.data : []);
+    } catch (err) {
+      console.error('Failed to fetch holidays', err);
+    } finally {
+      setLoadingCalendar(false);
+    }
+  };
+
+  const handleToggleHoliday = async (dateStr) => {
+    try {
+      const res = await axios.post(`${import.meta.env.VITE_API_URL}/api/holidays/toggle`, { date: dateStr, title: 'Public Holiday' });
+      if (res.data && res.data.success) {
+        fetchHolidays(calendarMonth);
+        fetchSalaryReport(salaryMonth);
+      }
+    } catch (err) {
+      console.error('Failed to toggle holiday', err);
+      alert('Failed to update public holiday status');
+    }
+  };
+
   useEffect(() => {
     if (selectedEmployeeId) {
       fetchDetailedData(selectedEmployeeId, detailedDate);
@@ -188,6 +302,12 @@ function App() {
       fetchSalaryReport(salaryMonth);
     }
   }, [salaryMonth, isAuthenticated, activeTab]);
+
+  useEffect(() => {
+    if (isAuthenticated && (activeTab === 'calendar' || activeTab === 'salary')) {
+      fetchHolidays(activeTab === 'calendar' ? calendarMonth : salaryMonth);
+    }
+  }, [calendarMonth, salaryMonth, isAuthenticated, activeTab]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -448,6 +568,9 @@ function App() {
           <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('salary'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'salary' ? 'active' : ''}`}>
             <span className="nav-icon">💰</span> Salary Summary
           </a>
+          <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('calendar'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'calendar' ? 'active' : ''}`}>
+            <span className="nav-icon">🗓️</span> Calendar
+          </a>
           <a href="#" onClick={(e) => { e.preventDefault(); setActiveTab('live'); setIsMobileMenuOpen(false); }} className={`nav-item ${activeTab === 'live' ? 'active' : ''}`}>
             <span className="nav-icon">📍</span> Live Tracking
           </a>
@@ -478,7 +601,7 @@ function App() {
               ☰
             </button>
             <h1 className="page-title" style={{ margin: 0 }}>
-              {activeTab === 'employees' ? 'Employees Directory' : activeTab === 'leaves' ? 'Leave Requests' : activeTab === 'live' ? 'Live Tracking' : activeTab === 'attendance' ? 'Attendance Log' : activeTab === 'salary' ? 'Salary Summary' : 'Overview Dashboard'}
+              {activeTab === 'employees' ? 'Employees Directory' : activeTab === 'leaves' ? 'Leave Requests' : activeTab === 'calendar' ? 'Company Calendar & Holidays' : activeTab === 'live' ? 'Live Tracking' : activeTab === 'attendance' ? 'Attendance Log' : activeTab === 'salary' ? 'Salary Summary' : 'Overview Dashboard'}
             </h1>
           </div>
           <div className="header-actions">
@@ -734,14 +857,18 @@ function App() {
           {/* ATTENDANCE LOG TAB */}
           {activeTab === 'attendance' && (
             <div className="glass-panel">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px', flexWrap: 'wrap', gap: '15px' }}>
                 <h2 className="section-title" style={{ margin: 0 }}>Daily Attendance Ledger</h2>
-                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                   <button className="btn btn-primary" onClick={downloadTodaysReport}>Download Today's Report</button>
-                  <button className="btn btn-neutral" onClick={downloadMonthlyReport}>Download Monthly Report</button>
+                  <button className="btn btn-neutral" onClick={downloadMonthlyReport}>Download Detailed Monthly Report</button>
+                  <div className="date-selector" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="month" className="edit-input date-picker-input" value={reportMonth} onChange={(e) => setReportMonth(e.target.value)} onClick={(e) => e.target.showPicker?.()} style={{ width: 'auto' }} />
+                    <button className="btn btn-primary" onClick={downloadSimpleMonthlyReport} style={{ background: '#10b981', color: 'white' }}>Download Simple Monthly Report</button>
+                  </div>
                   <div className="date-selector">
                     <button className="btn-neutral date-arrow" onClick={handlePrevDate}>&lt;</button>
-                    <input type="date" className="edit-input date-picker-input" value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} />
+                    <input type="date" className="edit-input date-picker-input" value={attendanceDate} onChange={(e) => setAttendanceDate(e.target.value)} onClick={(e) => e.target.showPicker?.()} />
                     <button className="btn-neutral date-arrow" onClick={handleNextDate}>&gt;</button>
                   </div>
                 </div>
@@ -804,14 +931,14 @@ function App() {
                             )}
                           </td>
                           <td>
-                            <strong style={{ color: metRequirement ? '#10b981' : '#f59e0b' }}>
+                            <strong style={{ color: metRequirement ? '#10b981' : emp.totalMinutes >= 60 ? '#f59e0b' : '#ef4444' }}>
                               {Math.floor(emp.totalMinutes / 60)}h {emp.totalMinutes % 60}m
                             </strong>
                           </td>
                           <td>
                             {metRequirement ? (
                               <span className="status-badge active" style={{ display: 'inline-block', width: 'auto' }}>Present</span>
-                            ) : emp.totalMinutes > 0 ? (
+                            ) : emp.totalMinutes >= 60 ? (
                               <span className="status-badge idle" style={{ display: 'inline-block', width: 'auto' }}>Requirement Not Met</span>
                             ) : emp.onLeave ? (
                               <span className="status-badge" style={{ display: 'inline-block', width: 'auto', background: '#e0e7ff', color: '#4f46e5' }}>On Leave ({emp.leaveType === 'HALF_DAY' ? 'Half' : emp.leaveType === 'HOURLY' ? 'Hourly' : 'Full'})</span>
@@ -838,12 +965,16 @@ function App() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '20px' }}>
                 <h2 className="section-title" style={{ margin: 0 }}>Monthly Salary Report</h2>
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary" onClick={downloadSalaryReport} style={{ background: '#10b981', color: 'white' }}>
+                    📥 Download Report
+                  </button>
                   <input
                     type="month"
                     className="edit-input"
-                    style={{ width: '160px', margin: 0 }}
+                    style={{ width: '160px', margin: 0, cursor: 'pointer' }}
                     value={salaryMonth}
                     onChange={(e) => setSalaryMonth(e.target.value)}
+                    onClick={(e) => e.target.showPicker?.()}
                   />
                   <input
                     type="text"
@@ -861,11 +992,17 @@ function App() {
                   <table className="premium-table">
                     <thead>
                       <tr>
-                        <th>Employee Name</th>
-                        <th style={{ textAlign: 'center' }}>Days Present</th>
-                        <th style={{ textAlign: 'center' }}>Req Not Met Days</th>
-                        <th style={{ textAlign: 'center' }}>Hours Active</th>
-                        <th style={{ textAlign: 'right' }}>Salary Acquired</th>
+                        <th>1<br/>Employee Name</th>
+                        <th style={{ textAlign: 'center' }}>2<br/>Total Days</th>
+                        <th style={{ textAlign: 'center' }}>3<br/>Days Present</th>
+                        <th style={{ textAlign: 'center' }}>4<br/>Days Absent</th>
+                        <th style={{ textAlign: 'center' }}>5<br/>Holiday Working Days</th>
+                        <th style={{ textAlign: 'center' }}>3+5 (6)<br/>Total Present Days (Inc. Sundays)</th>
+                        <th style={{ textAlign: 'center' }}>7<br/>Avg Login</th>
+                        <th style={{ textAlign: 'center' }}>8<br/>Avg Logout</th>
+                        <th style={{ textAlign: 'center' }}>9<br/>Hours Active</th>
+                        <th style={{ textAlign: 'right' }}>10<br/>Monthly Salary</th>
+                        <th style={{ textAlign: 'right' }}>(10*6)/24<br/>Salary Acquired</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -877,40 +1014,188 @@ function App() {
                               <div className="emp-name">{emp.name}</div>
                               <div className="emp-email" style={{ fontSize: '11px', color: '#64748b' }}>{emp.email}</div>
                             </td>
+                            <td style={{ textAlign: 'center', fontWeight: '600' }}>
+                              {emp.totalDays}
+                            </td>
                             <td style={{ textAlign: 'center' }}>
                               <span className="status-badge glow-approved" style={{ display: 'inline-block', width: 'auto', padding: '4px 10px' }}>
-                                {emp.daysPresent} days
+                                {emp.daysPresent}
                               </span>
                             </td>
                             <td style={{ textAlign: 'center' }}>
-                              {emp.reqNotMetDays > 0 ? (
+                              {emp.daysAbsent > 0 ? (
                                 <span className="status-badge glow-rejected" style={{ display: 'inline-block', width: 'auto', padding: '4px 10px', background: '#fef2f2', color: '#ef4444' }}>
-                                  ⚠️ {emp.reqNotMetDays} days
+                                  {emp.daysAbsent}
                                 </span>
                               ) : (
                                 <span style={{ color: '#94a3b8', fontSize: '13px' }}>0</span>
                               )}
                             </td>
+                            <td style={{ textAlign: 'center' }}>
+                              {emp.holidayWorkingDays > 0 ? (
+                                <span className="status-badge" style={{ display: 'inline-block', width: 'auto', padding: '4px 10px', background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0', fontWeight: 'bold' }}>
+                                  🎉 {emp.holidayWorkingDays}
+                                </span>
+                              ) : (
+                                <span style={{ color: '#94a3b8', fontSize: '13px' }}>0</span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: 'bold', color: '#0f766e' }}>
+                              {emp.totalPresentDaysIncSundays}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: '600', color: '#0284c7', fontSize: '13px' }}>
+                              {emp.avgClockIn || '--'}
+                            </td>
+                            <td style={{ textAlign: 'center', fontWeight: '600', color: '#4f46e5', fontSize: '13px' }}>
+                              {emp.avgClockOut || '--'}
+                            </td>
                             <td style={{ textAlign: 'center', fontWeight: '600', color: '#334155' }}>
                               ⏱️ {emp.hoursActive} hrs
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: '600', color: '#475569' }}>
+                              ₹{Number(emp.monthlySalary || 0).toLocaleString('en-IN')}
                             </td>
                             <td style={{ textAlign: 'right' }}>
                               <div style={{ fontWeight: 'bold', color: '#10b981', fontSize: '14px' }}>
                                 ₹{Number(emp.salaryAcquired || 0).toLocaleString('en-IN')}
                               </div>
-                              <div style={{ fontSize: '10px', color: '#64748b' }}>
-                                (₹{emp.hourlySalary || (emp.dailySalary ? (emp.dailySalary / 8).toFixed(2) : 0)} / hr)
-                              </div>
                             </td>
                           </tr>
                         ))}
                       {salaryReport.length === 0 && (
-                        <tr><td colSpan="5" style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No salary data available for this month.</td></tr>
+                        <tr><td colSpan="11" style={{ textAlign: 'center', padding: '30px', color: '#94a3b8' }}>No salary data available for this month.</td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* CALENDAR TAB */}
+          {activeTab === 'calendar' && (
+            <div className="glass-panel">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '15px', marginBottom: '24px' }}>
+                <div>
+                  <h2 className="section-title" style={{ margin: 0 }}>Company Calendar & Public Holidays</h2>
+                  <p style={{ margin: '4px 0 0 0', color: '#64748b', fontSize: '13px' }}>
+                    Click on any date to mark or unmark it as a Public Holiday. Working on a Public Holiday or Sunday counts towards Holiday Working Days.
+                  </p>
+                </div>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <input
+                    type="month"
+                    className="edit-input"
+                    style={{ width: '160px', margin: 0, cursor: 'pointer' }}
+                    value={calendarMonth}
+                    onChange={(e) => setCalendarMonth(e.target.value)}
+                    onClick={(e) => e.target.showPicker?.()}
+                  />
+                </div>
+              </div>
+
+              {loadingCalendar ? <Loader /> : (() => {
+                const [year, month] = calendarMonth.split('-').map(Number);
+                const daysInMonthCount = new Date(year, month, 0).getDate();
+                const firstDayIndex = new Date(year, month - 1, 1).getDay(); // 0 = Sun
+                const todayStr = new Date().toISOString().split('T')[0];
+
+                const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+                const calendarDays = [];
+
+                for (let i = 0; i < firstDayIndex; i++) {
+                  calendarDays.push(null);
+                }
+                for (let day = 1; day <= daysInMonthCount; day++) {
+                  const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                  const isSunday = new Date(year, month - 1, day).getDay() === 0;
+                  const holidayObj = holidays.find(h => h.date === dateStr);
+                  const isHoliday = !!holidayObj;
+                  const isToday = dateStr === todayStr;
+
+                  calendarDays.push({
+                    day,
+                    dateStr,
+                    isSunday,
+                    isHoliday,
+                    holidayTitle: holidayObj?.title || 'Public Holiday',
+                    isToday
+                  });
+                }
+
+                return (
+                  <div className="calendar-container">
+                    <div className="calendar-grid-header" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px', marginBottom: '10px', textAlign: 'center', fontWeight: 'bold', color: '#475569' }}>
+                      {dayHeaders.map(dh => (
+                        <div key={dh} style={{ padding: '8px', color: dh === 'Sun' ? '#ef4444' : '#475569' }}>{dh}</div>
+                      ))}
+                    </div>
+                    <div className="calendar-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '10px' }}>
+                      {calendarDays.map((cd, index) => {
+                        if (!cd) {
+                          return <div key={`empty-${index}`} style={{ minHeight: '95px', background: 'rgba(241, 245, 249, 0.4)', borderRadius: '12px', border: '1px border-dash rgba(203,213,225,0.4)' }}></div>;
+                        }
+                        return (
+                          <div
+                            key={cd.dateStr}
+                            onClick={() => handleToggleHoliday(cd.dateStr)}
+                            title={cd.isHoliday ? 'Click to remove Public Holiday' : 'Click to mark as Public Holiday'}
+                            style={{
+                              minHeight: '95px',
+                              padding: '12px',
+                              borderRadius: '14px',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              justify: 'space-between',
+                              transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                              background: cd.isHoliday
+                                ? 'linear-gradient(135deg, rgba(254, 226, 226, 0.95) 0%, rgba(254, 202, 202, 0.8) 100%)'
+                                : cd.isSunday
+                                ? 'linear-gradient(135deg, rgba(240, 253, 244, 0.95) 0%, rgba(220, 252, 231, 0.7) 100%)'
+                                : 'rgba(255, 255, 255, 0.85)',
+                              border: cd.isToday
+                                ? '2px solid #0284c7'
+                                : cd.isHoliday
+                                ? '1px solid #f87171'
+                                : cd.isSunday
+                                ? '1px solid #86efac'
+                                : '1px solid rgba(203, 213, 225, 0.6)',
+                              boxShadow: cd.isToday ? '0 0 12px rgba(2, 132, 199, 0.3)' : '0 4px 6px -1px rgba(0,0,0,0.05)'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontWeight: 'bold', fontSize: '16px', color: cd.isSunday ? '#16a34a' : cd.isHoliday ? '#dc2626' : '#0f172a' }}>
+                                {cd.day}
+                              </span>
+                              {cd.isToday && (
+                                <span style={{ fontSize: '10px', background: '#0284c7', color: 'white', padding: '2px 6px', borderRadius: '8px', fontWeight: 'bold' }}>Today</span>
+                              )}
+                            </div>
+
+                            <div style={{ marginTop: '6px' }}>
+                              {cd.isHoliday && (
+                                <span className="status-badge" style={{ display: 'inline-block', fontSize: '10px', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', fontWeight: 'bold', width: '100%', textAlign: 'center', padding: '3px 0' }}>
+                                  🚩 Public Holiday
+                                </span>
+                              )}
+                              {cd.isSunday && !cd.isHoliday && (
+                                <span style={{ fontSize: '11px', color: '#16a34a', fontWeight: '600', display: 'block', textAlign: 'center' }}>
+                                  Sunday
+                                </span>
+                              )}
+                            </div>
+
+                            <div style={{ textAlign: 'right', fontSize: '10px', color: cd.isHoliday ? '#b91c1c' : '#64748b', marginTop: '4px', fontWeight: '500' }}>
+                              {cd.isHoliday ? 'Tap to Unmark' : 'Tap to Mark'}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -940,9 +1225,10 @@ function App() {
                           <input
                             type="date"
                             className="edit-input"
-                            style={{ width: '130px', margin: 0, padding: '5px' }}
+                            style={{ width: '130px', margin: 0, padding: '5px', cursor: 'pointer' }}
                             value={detailedDate}
                             onChange={(e) => setDetailedDate(e.target.value)}
+                            onClick={(e) => e.target.showPicker?.()}
                           />
                           <button 
                             className="btn btn-neutral" 
@@ -1022,9 +1308,10 @@ function App() {
                           <input
                             type="date"
                             className="edit-input"
-                            style={{ width: '130px', margin: 0, padding: '5px' }}
+                            style={{ width: '130px', margin: 0, padding: '5px', cursor: 'pointer' }}
                             value={detailedDate}
                             onChange={(e) => setDetailedDate(e.target.value)}
+                            onClick={(e) => e.target.showPicker?.()}
                           />
                           <button 
                             className="btn btn-neutral" 
@@ -1320,7 +1607,9 @@ function App() {
 
         .date-selector { display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,0.5); padding: 4px; border-radius: 12px; border: 1px solid rgba(203,213,225,0.5); }
         .date-arrow { padding: 8px 12px !important; font-weight: bold; font-size: 16px; display: flex; align-items: center; justify-content: center; height: 38px; line-height: 1; }
-        .date-picker-input { padding: 8px 12px; border: none; background: transparent; height: 38px; font-weight: bold; width: 140px; text-align: center; cursor: pointer; }
+        .date-picker-input { padding: 8px 12px; border: none; background: transparent; height: 38px; font-weight: bold; width: 140px; text-align: center; cursor: pointer; user-select: none; -webkit-user-select: none; }
+        input[type="date"], input[type="month"] { user-select: none; -webkit-user-select: none; cursor: pointer; }
+        input[type="date"]::-webkit-calendar-picker-indicator, input[type="month"]::-webkit-calendar-picker-indicator { cursor: pointer; }
         .penalty-badge { display: inline-block; background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; border-radius: 4px; padding: 2px 6px; font-size: 10px; font-weight: bold; text-transform: uppercase; margin-left: 8px; vertical-align: middle; }
         
         /* Vibrant Buttons */
