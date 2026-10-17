@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { API_URL } from './api';
+import { businessDate } from './business-date';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
-import * as XLSX from 'xlsx';
 
 const Loader = () => (
   <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '60px', animation: 'fadeIn 0.3s ease-out' }}>
@@ -31,24 +32,24 @@ function App() {
 
   // Detailed View State
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
-  const [detailedDate, setDetailedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [detailedDate, setDetailedDate] = useState(businessDate());
   const [detailedData, setDetailedData] = useState(null);
   const [activeSubModal, setActiveSubModal] = useState(null); // 'appActivity' | 'appUsage' | null
   const [lastUpdate, setLastUpdate] = useState(Date.now());
 
   // Attendance Log State
-  const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().split('T')[0]);
+  const [attendanceDate, setAttendanceDate] = useState(businessDate());
   const [dailyAttendanceData, setDailyAttendanceData] = useState([]);
-  const [reportMonth, setReportMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [reportMonth, setReportMonth] = useState(businessDate().slice(0, 7));
 
   // Salary Tab State
-  const [salaryMonth, setSalaryMonth] = useState(new Date().toISOString().substring(0, 7)); // e.g. "2026-08"
+  const [salaryMonth, setSalaryMonth] = useState(businessDate().slice(0, 7)); // e.g. "2026-08"
   const [salaryReport, setSalaryReport] = useState([]);
   const [loadingSalary, setLoadingSalary] = useState(false);
   const [salarySearch, setSalarySearch] = useState('');
 
   // Calendar Tab State
-  const [calendarMonth, setCalendarMonth] = useState(new Date().toISOString().substring(0, 7));
+  const [calendarMonth, setCalendarMonth] = useState(businessDate().slice(0, 7));
   const [holidays, setHolidays] = useState([]);
   const [loadingCalendar, setLoadingCalendar] = useState(false);
 
@@ -56,7 +57,7 @@ function App() {
 
   const [editFormData, setEditFormData] = useState({ newId: '', name: '', email: '', password: '' });
   const [processingLeaves, setProcessingLeaves] = useState({});
-  const [uiTick, setUiTick] = useState(0);
+  const [, setUiTick] = useState(0);
 
   const [loadingLeaves, setLoadingLeaves] = useState(true);
   const [loadingLive, setLoadingLive] = useState(true);
@@ -68,37 +69,33 @@ function App() {
     localStorage.setItem('adminActiveTab', activeTab);
   }, [activeTab]);
 
-  const fetchData = async () => {
-    if (employees.length === 0) setLoadingLeaves(true);
+  const fetchData = useCallback(async () => {
     try {
-      console.log(`[FRONTEND LOG] Fetching data from API URL: ${import.meta.env.VITE_API_URL}`);
-      const leavesRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/leaves`);
+      const leavesRes = await axios.get(`${API_URL}/api/leaves`);
       setLeaves(Array.isArray(leavesRes.data) ? leavesRes.data : []);
-      const empRes = await axios.get(`${import.meta.env.VITE_API_URL}/api/employees`);
-      console.log('[FRONTEND LOG] Received Employees Data:', empRes.data);
+      const empRes = await axios.get(`${API_URL}/api/employees`);
       setEmployees(Array.isArray(empRes.data) ? empRes.data : []);
     } catch (err) {
       console.error('Error fetching data', err);
     } finally {
       setLoadingLeaves(false);
     }
-  };
+  }, []);
 
-  const fetchLiveData = async () => {
-    if (liveData.length === 0) setLoadingLive(true);
+  const fetchLiveData = useCallback(async () => {
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/live`);
+      const res = await axios.get(`${API_URL}/api/attendance/live`);
       setLiveData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch live data', err);
     } finally {
       setLoadingLive(false);
     }
-  };
+  }, []);
 
   const fetchDetailedData = async (empId, dateStr) => {
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/employee/${empId}?date=${dateStr}`);
+      const res = await axios.get(`${API_URL}/api/attendance/employee/${empId}?date=${dateStr}`);
       setDetailedData(res.data);
     } catch (err) {
       console.error('Failed to fetch detailed data', err);
@@ -120,7 +117,7 @@ function App() {
     });
   };
 
-  const downloadTodaysReport = () => {
+  const downloadTodaysReport = async () => {
     if (dailyAttendanceData.length === 0) return alert('No data to download for today.');
     const exportData = dailyAttendanceData.map(emp => ({
       'Employee Name': emp.name,
@@ -131,6 +128,7 @@ function App() {
       'Total Active (hrs)': Number((emp.totalMinutes / 60).toFixed(2)),
       'Status': emp.totalMinutes >= 420 ? 'Present' : (emp.totalMinutes >= 60 ? 'Requirement Not Met' : (emp.onLeave ? 'On Leave' : 'Absent'))
     }));
+    const XLSX = await import('xlsx');
     const ws = XLSX.utils.json_to_sheet(exportData);
     autoFitColumns(ws, exportData);
     const wb = XLSX.utils.book_new();
@@ -141,7 +139,7 @@ function App() {
   const downloadMonthlyReport = async () => {
     try {
       const monthStr = attendanceDate.substring(0, 7); // e.g. "2026-07"
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/monthly?month=${monthStr}`);
+      const res = await axios.get(`${API_URL}/api/attendance/monthly?month=${monthStr}`);
       const data = res.data;
       if (data.length === 0) return alert('No data to download for this month.');
       
@@ -164,7 +162,8 @@ function App() {
         };
       });
 
-      const ws = XLSX.utils.json_to_sheet(exportData);
+      const XLSX = await import('xlsx');
+    const ws = XLSX.utils.json_to_sheet(exportData);
       autoFitColumns(ws, exportData);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Monthly Report");
@@ -177,7 +176,7 @@ function App() {
 
   const downloadSimpleMonthlyReport = async () => {
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/monthly?month=${reportMonth}`);
+      const res = await axios.get(`${API_URL}/api/attendance/monthly?month=${reportMonth}`);
       const data = res.data;
       if (data.length === 0) return alert('No data to download for this month.');
       
@@ -199,7 +198,8 @@ function App() {
         };
       });
 
-      const ws = XLSX.utils.json_to_sheet(exportData);
+      const XLSX = await import('xlsx');
+    const ws = XLSX.utils.json_to_sheet(exportData);
       autoFitColumns(ws, exportData);
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Simple Monthly Report");
@@ -210,7 +210,7 @@ function App() {
     }
   };
 
-  const downloadSalaryReport = () => {
+  const downloadSalaryReport = async () => {
     if (!salaryReport || salaryReport.length === 0) {
       return alert('No salary data available to download for this month.');
     }
@@ -229,6 +229,7 @@ function App() {
       'Salary Acquired': emp.salaryAcquired || 0
     }));
 
+    const XLSX = await import('xlsx');
     const ws = XLSX.utils.json_to_sheet(exportData);
     autoFitColumns(ws, exportData);
     const wb = XLSX.utils.book_new();
@@ -239,7 +240,7 @@ function App() {
   const fetchDailyAttendance = async (dateStr) => {
     setLoadingAttendance(true);
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/attendance/daily?date=${dateStr}`);
+      const res = await axios.get(`${API_URL}/api/attendance/daily?date=${dateStr}`);
       setDailyAttendanceData(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch daily attendance', err);
@@ -251,7 +252,7 @@ function App() {
   const fetchSalaryReport = async (monthStr) => {
     setLoadingSalary(true);
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/salary/monthly?month=${monthStr}`);
+      const res = await axios.get(`${API_URL}/api/salary/monthly?month=${monthStr}`);
       setSalaryReport(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch salary report', err);
@@ -263,7 +264,7 @@ function App() {
   const fetchHolidays = async (monthStr) => {
     setLoadingCalendar(true);
     try {
-      const res = await axios.get(`${import.meta.env.VITE_API_URL}/api/holidays?month=${monthStr}`);
+      const res = await axios.get(`${API_URL}/api/holidays?month=${monthStr}`);
       setHolidays(Array.isArray(res.data) ? res.data : []);
     } catch (err) {
       console.error('Failed to fetch holidays', err);
@@ -274,7 +275,7 @@ function App() {
 
   const handleToggleHoliday = async (dateStr) => {
     try {
-      const res = await axios.post(`${import.meta.env.VITE_API_URL}/api/holidays/toggle`, { date: dateStr, title: 'Public Holiday' });
+      const res = await axios.post(`${API_URL}/api/holidays/toggle`, { date: dateStr, title: 'Public Holiday' });
       if (res.data && res.data.success) {
         fetchHolidays(calendarMonth);
         fetchSalaryReport(salaryMonth);
@@ -326,7 +327,7 @@ function App() {
     }, 1000);
 
     // Connect WebSocket for real-time updates
-    const socket = io(import.meta.env.VITE_API_URL);
+    const socket = io(API_URL);
 
     socket.on('data-update', () => {
       fetchData();
@@ -354,13 +355,13 @@ function App() {
       clearInterval(uiRefreshInterval);
       socket.disconnect();
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, fetchData, fetchLiveData]);
 
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL}/api/admin/login`, authForm);
+      await axios.post(`${API_URL}/api/admin/login`, authForm);
       setIsAuthenticated(true);
       setLoggedInEmail(authForm.email);
       localStorage.setItem('adminAuth', 'true');
@@ -374,7 +375,7 @@ function App() {
   const handleApprove = async (id, status) => {
     setProcessingLeaves(prev => ({ ...prev, [id]: true }));
     try {
-      await axios.put(`${import.meta.env.VITE_API_URL}/api/leaves/${id}`, { status });
+      await axios.put(`${API_URL}/api/leaves/${id}`, { status });
       fetchData();
     } catch (err) {
       console.error('Error updating status', err);
@@ -401,7 +402,7 @@ function App() {
     e.preventDefault();
     setIsAddingEmployee(true);
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL}/api/employees`, newEmployee);
+      await axios.post(`${API_URL}/api/employees`, newEmployee);
       setNewEmployee({ name: '', email: '', monthlySalary: '' });
       fetchData();
     } catch (err) {
@@ -414,7 +415,7 @@ function App() {
   const handleDeleteEmployee = async (id) => {
     if (!window.confirm("Are you sure you want to delete this employee? This will also delete their leaves.")) return;
     try {
-      await axios.delete(`${import.meta.env.VITE_API_URL}/api/employees/${id}`);
+      await axios.delete(`${API_URL}/api/employees/${id}`);
       fetchData();
     } catch (err) {
       console.error('Error deleting employee', err);
@@ -423,27 +424,17 @@ function App() {
 
   const handleEditClick = (emp) => {
     setEditingEmployeeId(emp.id);
-    setEditFormData({ newId: emp.id, name: emp.name, email: emp.email, password: emp.password || '', monthlySalary: emp.monthlySalary || '' });
+    setEditFormData({ newId: emp.id, name: emp.name, email: emp.email, password: '', monthlySalary: emp.monthlySalary || '' });
   };
 
   const handleSaveEdit = async (id) => {
     try {
-      const res = await axios.put(`${import.meta.env.VITE_API_URL}/api/employees/${id}`, editFormData);
+      await axios.put(`${API_URL}/api/employees/${id}`, editFormData);
       setEditingEmployeeId(null);
       fetchData();
     } catch (err) {
       console.error('Error updating employee', err);
       alert(err.response?.data?.error || 'Failed to update employee details');
-    }
-  };
-
-  const handleDeleteLeave = async (id) => {
-    if (!window.confirm("Are you sure you want to delete this leave request?")) return;
-    try {
-      await axios.delete(`${import.meta.env.VITE_API_URL}/api/leaves/${id}`);
-      fetchData();
-    } catch (err) {
-      console.error('Error deleting leave', err);
     }
   };
 
@@ -597,7 +588,7 @@ function App() {
       <main className="main-content">
         <header className="top-header glass-panel">
           <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-            <button className="mobile-hamburger icon-btn" onClick={() => setIsMobileMenuOpen(true)}>
+            <button aria-label="Open navigation" aria-expanded={isMobileMenuOpen} className="mobile-hamburger icon-btn" onClick={() => setIsMobileMenuOpen(true)}>
               ☰
             </button>
             <h1 className="page-title" style={{ margin: 0 }}>
@@ -689,7 +680,6 @@ function App() {
                             ) : (
                               <div>
                                 <span className="code-badge">{emp.id}</span>
-                                {emp.password && <div style={{ fontSize: '12px', color: '#64748b', marginTop: '8px', fontWeight: '500' }}>Pwd: {emp.password}</div>}
                               </div>
                             )}
                           </td>
@@ -921,7 +911,7 @@ function App() {
                                 {isEarly && <span className="penalty-badge">Early Logout</span>}
                               </div>
                             ) : emp.clockIn ? (
-                              attendanceDate === new Date().toISOString().split('T')[0] ? (
+                              attendanceDate === businessDate() ? (
                                 <span style={{ color: '#3b82f6', fontWeight: '500' }}>Still Active</span>
                               ) : (
                                 <span style={{ color: '#ef4444', fontWeight: '500' }}>Missing Logout</span>
@@ -1098,7 +1088,7 @@ function App() {
                 const [year, month] = calendarMonth.split('-').map(Number);
                 const daysInMonthCount = new Date(year, month, 0).getDate();
                 const firstDayIndex = new Date(year, month - 1, 1).getDay(); // 0 = Sun
-                const todayStr = new Date().toISOString().split('T')[0];
+                const todayStr = businessDate();
 
                 const dayHeaders = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
                 const calendarDays = [];
@@ -1733,3 +1723,6 @@ function App() {
 }
 
 export default App;
+
+
+
